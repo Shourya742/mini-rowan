@@ -6,7 +6,7 @@
 // In the green node we only know the length of the node itself, but we do not know its relative position in the syntax tree
 // For red node we want to get the offset of a node from the start of syntax tree
 
-use std::{fmt::Display, rc::Rc, sync::Arc};
+use std::{fmt::Display, iter, rc::Rc, sync::Arc};
 
 use crate::{
     NodeOrToken, SyntaxKind,
@@ -76,32 +76,45 @@ impl RedNodeData {
     pub fn parent(&self) -> Option<&RedNode> {
         self.parent.as_ref()
     }
+    // O(1)
+    pub fn nth_child<'a>(self: &'a RedNode) -> Option<RedElement> {
+        todo!()
+    }
+
+    pub fn child_containing_range<'a>(
+        self: &'a RedNode,
+        range: (usize, usize),
+    ) -> Option<RedElement> {
+        todo!()
+    }
 
     pub fn children<'a>(self: &'a RedNode) -> impl Iterator<Item = RedElement> + 'a {
         let mut offset_in_parent = 0;
-        self.green().children().enumerate().map(move |(idx, green_child)| {
-            let text_offset = self.text_offset() + offset_in_parent;
-            offset_in_parent += green_child.text_len();
+        self.green()
+            .children()
+            .enumerate()
+            .map(move |(idx, green_child)| {
+                let text_offset = self.text_offset() + offset_in_parent;
+                offset_in_parent += green_child.text_len();
 
-            match green_child {
-                NodeOrToken::Node(node) => Rc::new(RedNodeData {
-                    parent: Some(Rc::clone(self)),
-                    index_in_parent: idx,
-                    text_offset,
-                    green: node,
-                })
-                .into(),
-                NodeOrToken::Token(token) => Rc::new(RedTokenData {
-                    parent: Some(Rc::clone(self)),
-                    index_in_parent: idx,
-                    text_offset,
-                    green: token,
-                })
-                .into(),
-            }
-        })
+                match green_child {
+                    NodeOrToken::Node(node) => Rc::new(RedNodeData {
+                        parent: Some(Rc::clone(self)),
+                        index_in_parent: idx,
+                        text_offset,
+                        green: node,
+                    })
+                    .into(),
+                    NodeOrToken::Token(token) => Rc::new(RedTokenData {
+                        parent: Some(Rc::clone(self)),
+                        index_in_parent: idx,
+                        text_offset,
+                        green: token,
+                    })
+                    .into(),
+                }
+            })
     }
-
 
     pub fn replace_child<'a>(self: &'a RedNode, idx: usize, new_child: GreenElement) -> RedNode {
         let new_green = self.green().replace_child(idx, new_child.into());
@@ -111,9 +124,21 @@ impl RedNodeData {
     fn replace_ourselves<'a>(self: &'a RedNode, new_green: GreenNode) -> RedNode {
         match self.parent() {
             Some(parent) => parent.replace_child(self.index_in_parent, new_green.into()),
-            None => RedNodeData::new_root(new_green)
+            None => RedNodeData::new_root(new_green),
         }
     }
+
+    pub fn ancestors<'a>(self: &'a RedNode) -> impl Iterator<Item = &'a RedNode> {
+        iter::successors(Some(self), |&it| it.parent())
+    }
+
+    // pub fn descendants<'a>(self: &'a RedNode) -> impl Iterator<Item = &'a RedNode> {
+    //     todo!()
+    // }
+
+    // pub fn siblings<'a>(self: &'a RedNode) -> impl Iterator<Item = &'a RedNode> {
+    //     todo!()
+    // }
 }
 
 impl Display for RedNodeData {

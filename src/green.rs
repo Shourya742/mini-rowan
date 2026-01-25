@@ -35,7 +35,7 @@ pub type GreenNode = Arc<GreenNodeData>;
 #[derive(Clone, Debug)]
 pub struct GreenNodeData {
     kind: SyntaxKind,
-    children: Vec<GreenElement>,
+    children: Vec</*offset of parent: usize, to do operations faster*/ GreenElement>,
     len: usize,
 }
 

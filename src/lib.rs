@@ -13,8 +13,10 @@ Requirements:
 
 // Idea 1: "dynamically typed" tree: a homogeneous tree on nodes.
 
+mod ast;
 mod green;
 mod kinds;
+mod ptr;
 mod red;
 
 use std::sync::Arc;
@@ -24,7 +26,7 @@ use crate::{
     red::RedNodeData,
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct SyntaxKind(u16);
 
 #[derive(Clone, Debug)]
