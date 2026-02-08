@@ -381,7 +381,6 @@ impl<H, T> ThinArc<H, T> {
     }
 }
 
-
 impl<H, T> Deref for ThinArc<H, T> {
     type Target = HeaderSlice<H, [T]>;
 
@@ -390,7 +389,6 @@ impl<H, T> Deref for ThinArc<H, T> {
         unsafe { &(*thin_to_thick(self.ptr.as_ptr())).data }
     }
 }
-
 
 impl<H, T> Clone for ThinArc<H, T> {
     #[inline]
