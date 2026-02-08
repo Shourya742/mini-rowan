@@ -8,13 +8,12 @@ This structure should implement the following:
 * easy to navigate - from node to children, parent, siblings
 */
 
-
-mod green;
-pub mod red;
 pub mod api;
-mod syntax_text;
-mod utility_types;
 mod arc;
 pub mod ast;
 mod cow_mut;
+mod green;
+pub mod red;
 mod sll;
+mod syntax_text;
+mod utility_types;
