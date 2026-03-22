@@ -9,11 +9,11 @@ This structure should implement the following:
 */
 
 pub mod api;
-mod arc;
+pub mod arc;
 pub mod ast;
-mod cow_mut;
-mod green;
+pub mod cow_mut;
+pub mod green;
 pub mod red;
-mod sll;
-mod syntax_text;
-mod utility_types;
+pub mod sll;
+pub mod syntax_text;
+pub mod utility_types;
