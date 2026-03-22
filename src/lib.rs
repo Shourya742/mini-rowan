@@ -15,5 +15,6 @@ pub mod cow_mut;
 pub mod green;
 pub mod red;
 pub mod sll;
+pub mod syntax;
 pub mod syntax_text;
 pub mod utility_types;
