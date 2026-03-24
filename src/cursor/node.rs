@@ -1,20 +1,26 @@
 use core::fmt;
 use std::{
+    borrow::Cow,
     hash::{Hash, Hasher},
-    iter::FusedIterator,
+    iter::{self, FusedIterator},
+    ops,
+    ptr::NonNull,
     rc::Rc,
 };
 
 use text_size::{TextRange, TextSize};
 
 use crate::{
-    cursor::{NodeData, WeakGreenElement, element::SyntaxElement, token::SyntaxToken},
+    cursor::{
+        NodeData, WeakGreenElement, element::SyntaxElement, token::SyntaxToken,
+        trivia::SyntaxTrivia,
+    },
     green::{
         RawSyntaxKind,
         element::{GreenElement, GreenElementRef},
         node::{Child, Children, GreenNode, GreenNodeData, Slot},
     },
-    utility_types::{Direction, WalkEvent},
+    utility_types::{Direction, NodeOrToken, TokenAtOffset, WalkEvent},
 };
 
 #[derive(Clone)]
@@ -63,13 +69,26 @@ impl SyntaxNode {
     }
 
     #[inline]
+    pub fn kind(&self) -> RawSyntaxKind {
+        self.data().kind()
+    }
+
+    #[inline]
     pub(super) fn offset(&self) -> TextSize {
         self.data().offset()
     }
 
+    pub(crate) fn element_in_slot(&self, slot_index: u32) -> Option<SyntaxElement> {
+        let slot = self
+            .slots()
+            .nth(slot_index as usize)
+            .expect("Slot index out of bounds");
+        slot.map(|element| element)
+    }
+
     #[inline]
-    pub fn kind(&self) -> RawSyntaxKind {
-        self.data().kind()
+    pub(crate) fn slots(&self) -> SyntaxSlots {
+        SyntaxSlots::new(self.clone())
     }
 
     #[inline]
@@ -77,9 +96,349 @@ impl SyntaxNode {
         self.data().text_range()
     }
 
+    pub fn text_trimmed_range(&self) -> TextRange {
+        let range = self.text_range();
+        let mut start = range.start();
+        let mut end = range.end();
+
+        // Remove all trivia from the start of the node.
+        let mut token = self.first_token();
+        while let Some(t) = token.take() {
+            let (leading_len, trailing_len, total_len) = t.green().leading_trailing_total_len();
+            let token_len: u32 = (total_len - leading_len - trailing_len).into();
+            if token_len == 0 {
+                start += total_len;
+                token = t.next_token();
+            } else {
+                start += leading_len;
+            }
+        }
+
+        // Remove all trivia from the end of the node
+        let mut token = self.last_token();
+        while let Some(t) = token.take() {
+            let (leading_len, trailing_len, total_len) = t.green().leading_trailing_total_len();
+            let token_len: u32 = (total_len - leading_len - trailing_len).into();
+            if token_len == 0 {
+                end -= total_len;
+                token = t.prev_token();
+            } else {
+                end -= trailing_len;
+            }
+        }
+
+        TextRange::new(start, end.max(start))
+    }
+
+    pub fn first_leading_trivia(&self) -> Option<SyntaxTrivia> {
+        self.first_token().map(|x| x.leading_trivia())
+    }
+
+    pub fn last_trailing_trivia(&self) -> Option<SyntaxTrivia> {
+        self.last_token().map(|x| x.trailing_trivia())
+    }
+
+    #[inline]
+    pub fn index(&self) -> usize {
+        self.data().slot() as usize
+    }
+
+    #[inline]
+    pub fn text(&self) -> SyntaxNodeText {
+        SyntaxNodeText::new(self.clone())
+    }
+
+    #[inline]
+    pub fn text_trimmed(&self) -> SyntaxNodeText {
+        SyntaxNodeText::with_range(self.clone(), self.text_trimmed_range())
+    }
+
+    #[inline]
+    pub(crate) fn key(&self) -> (NonNull<()>, TextSize) {
+        self.data().key()
+    }
+
     #[inline]
     pub(crate) fn green(&self) -> &GreenNodeData {
         self.data().green().into_node().unwrap()
+    }
+
+    #[inline]
+    pub fn parent(&self) -> Option<Self> {
+        self.data().parent_node()
+    }
+
+    #[inline]
+    pub fn ancestors(&self) -> impl Iterator<Item = Self> + use<> {
+        iter::successors(Some(self.clone()), Self::parent)
+    }
+
+    #[inline]
+    pub fn children(&self) -> SyntaxNodeChildren {
+        SyntaxNodeChildren::new(self.clone())
+    }
+
+    #[inline]
+    pub fn children_with_tokens(&self) -> SyntaxElementChildren {
+        SyntaxElementChildren::new(self.clone())
+    }
+
+    #[inline]
+    pub fn tokens(&self) -> impl DoubleEndedIterator<Item = SyntaxToken> + '_ {
+        self.green().children().filter_map(|child| {
+            child.element().into_token().map(|token| {
+                SyntaxToken::new(
+                    token,
+                    self.clone(),
+                    child.slot(),
+                    self.offset() + child.rel_offset(),
+                )
+            })
+        })
+    }
+
+    pub fn first_child(&self) -> Option<Self> {
+        self.green().children().find_map(|child| {
+            child.element().into_node().map(|green| {
+                Self::new_child(
+                    green,
+                    self.clone(),
+                    child.slot(),
+                    self.offset() + child.rel_offset(),
+                )
+            })
+        })
+    }
+
+    pub fn last_child(&self) -> Option<Self> {
+        self.green().children().rev().find_map(|child| {
+            child.element().into_node().map(|green| {
+                Self::new_child(
+                    green,
+                    self.clone(),
+                    child.slot(),
+                    self.offset() + child.rel_offset(),
+                )
+            })
+        })
+    }
+
+    pub fn first_child_or_token(&self) -> Option<SyntaxElement> {
+        self.green().children().next().map(|child| {
+            SyntaxElement::new(
+                child.element(),
+                self.clone(),
+                child.slot(),
+                self.offset() + child.rel_offset(),
+            )
+        })
+    }
+
+    pub fn last_child_or_token(&self) -> Option<SyntaxElement> {
+        self.green().children().next_back().map(|child| {
+            SyntaxElement::new(
+                child.element(),
+                self.clone(),
+                child.slot(),
+                self.offset() + child.rel_offset(),
+            )
+        })
+    }
+
+    pub fn next_sibling(&self) -> Option<Self> {
+        self.data().next_sibling()
+    }
+
+    pub fn prev_sibling(&self) -> Option<Self> {
+        self.data().prev_sibling()
+    }
+
+    pub fn next_sibling_or_token(&self) -> Option<SyntaxElement> {
+        self.data().next_sibling_or_token()
+    }
+
+    pub fn prev_sibling_or_token(&self) -> Option<SyntaxElement> {
+        self.data().prev_sibling_or_token()
+    }
+
+    pub fn first_token(&self) -> Option<SyntaxToken> {
+        self.descendants_with_tokens(Direction::Next)
+            .find_map(|x| x.into_token())
+    }
+
+    pub fn last_token(&self) -> Option<SyntaxToken> {
+        PreorderTokens::new(self.clone(), Direction::Prev)
+            .filter_map(|event| match event {
+                WalkEvent::Enter(it) => Some(it),
+                WalkEvent::Leave(_) => None,
+            })
+            .find_map(|x| x.into_token())
+    }
+
+    #[inline]
+    pub fn sibling(&self, direction: Direction) -> impl Iterator<Item = Self> + use<> {
+        iter::successors(Some(self.clone()), move |node| match direction {
+            Direction::Next => node.next_sibling(),
+            Direction::Prev => node.prev_sibling(),
+        })
+    }
+
+    #[inline]
+    pub fn siblings_with_tokens(
+        &self,
+        direction: Direction,
+    ) -> impl Iterator<Item = SyntaxElement> + use<> {
+        let me: SyntaxElement = self.clone().into();
+        iter::successors(Some(me), move |el| match direction {
+            Direction::Next => el.next_sibling_or_token(),
+            Direction::Prev => el.prev_sibling_or_token(),
+        })
+    }
+
+    #[inline]
+    pub fn descendants(&self) -> impl Iterator<Item = Self> + use<> {
+        self.preorder().filter_map(|event| match event {
+            WalkEvent::Enter(node) => Some(node),
+            WalkEvent::Leave(_) => None,
+        })
+    }
+
+    #[inline]
+    pub fn descendants_with_tokens(
+        &self,
+        direction: Direction,
+    ) -> impl Iterator<Item = SyntaxElement> + use<> {
+        self.preorder_with_tokens(direction)
+            .filter_map(|event| match event {
+                WalkEvent::Enter(it) => Some(it),
+                WalkEvent::Leave(it) => None,
+            })
+    }
+
+    pub fn preorder(&self) -> Preorder {
+        Preorder::new(self.clone())
+    }
+
+    #[inline]
+    pub fn preorder_with_tokens(&self, direction: Direction) -> PreorderWithTokens {
+        PreorderWithTokens::new(self.clone(), direction)
+    }
+
+    pub fn preorder_tokens(&self, direction: Direction) -> PreorderTokens {
+        PreorderTokens::new(self.clone(), direction)
+    }
+
+    pub(crate) fn preorder_slots(&self) -> SlotsPreorder {
+        SlotsPreorder::new(self.clone())
+    }
+
+    pub fn token_at_offset(&self, offset: TextSize) -> TokenAtOffset<SyntaxToken> {
+        let mut node = Cow::Borrowed(self);
+        loop {
+            let range = node.text_range();
+            if range.is_empty() || offset < range.start() || offset > range.end() {
+                return TokenAtOffset::None;
+            }
+
+            let mut children = node.children_with_tokens().filter(|child| {
+                let child_range = child.text_range();
+                !child_range.is_empty() && child_range.contains_inclusive(offset)
+            });
+
+            let left = children.next().unwrap();
+            let right = children.next();
+            assert!(children.next().is_none());
+
+            if let Some(right) = right {
+                let token_at_offset =
+                    |node: NodeOrToken<Self, SyntaxToken>| -> TokenAtOffset<SyntaxToken> {
+                        match node {
+                            NodeOrToken::Token(token) => TokenAtOffset::Single(token),
+                            NodeOrToken::Node(node) => node.token_at_offset(offset),
+                        }
+                    };
+
+                return match (token_at_offset(left), token_at_offset(token)) {
+                    (TokenAtOffset::Single(left), TokenAtOffset::Single(right)) => {
+                        TokenAtOffset::Between(left, right)
+                    }
+                    _ => TokenAtOffset::None,
+                };
+            }
+
+            match left {
+                NodeOrToken::Node(left) => node = Cow::Owned(left),
+                NodeOrToken::Token(left) => return TokenAtOffset::Single(left),
+            }
+        }
+    }
+
+    pub fn convering_element(&self, range: TextRange) -> SyntaxElement {
+        let mut res: SyntaxElement = self.clone().into();
+        loop {
+            assert!(
+                res.text_range().contains_range(range),
+                "Bad range: node range: {:?}, range: {:?}",
+                res.text_range(),
+                range
+            );
+            res = match &res {
+                NodeOrToken::Token(_) => return res,
+                NodeOrToken::Node(node) => match node.child_or_token_at_range(range) {
+                    Some(it) => it,
+                    None => return res,
+                },
+            }
+        }
+    }
+
+    pub fn child_or_token_at_range(&self, range: TextRange) -> Option<SyntaxElement> {
+        let rel_range = range - self.offset();
+        self.green()
+            .slot_at_range(rel_range)
+            .and_then(|(index, rel_offset, slot)| {
+                slot.as_ref().map(|green| {
+                    SyntaxElement::new(
+                        green,
+                        self.clone(),
+                        index as u32,
+                        self.offset() + rel_offset,
+                    )
+                })
+            })
+    }
+
+    #[must_use = "syntax elements are immutable, the result of update methods must be propagated to have any effect"]
+    pub fn detach(self) -> Self {
+        Self {
+            ptr: self.ptr.detach(),
+        }
+    }
+
+    #[must_use = "syntax elements are immutable, the result of update methods must be propagated to have any effect"]
+    pub fn splice_slots<R, I>(self, range: R, replace_with: I) -> Self
+    where
+        R: ops::RangeBounds<usize>,
+        I: Iterator<Item = Option<SyntaxElement>>,
+    {
+        Self {
+            ptr: self.ptr.splice_slots(
+                range,
+                replace_with.into_iter().map(|element| {
+                    element.map(|child| match child.detach() {
+                        NodeOrToken::Node(it) => it.ptr.into_green(),
+                        NodeOrToken::Token(it) => it.into_green(),
+                    })
+                }),
+            ),
+        }
+    }
+
+    #[must_use = "syntax elements are immutable, the result of update methods must be propagated to have any effect"]
+    pub fn replace_child(self, prev_elem: SyntaxElement, next_elem: SyntaxElement) -> Option<Self> {
+        Some(Self {
+            ptr: self.ptr.replace_child(prev_elem, next_elem)?,
+        })
     }
 }
 
@@ -110,7 +469,12 @@ impl fmt::Debug for SyntaxNode {
 
 impl fmt::Display for SyntaxNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        todo!()
+        self.preorder_with_tokens(Direction::Next)
+            .filter_map(|event| match event {
+                WalkEvent::Enter(NodeOrToken::Token(token)) => Some(token),
+                _ => None,
+            })
+            .try_for_each(|it| fmt::Display::fmt(&it, f))
     }
 }
 
@@ -119,10 +483,20 @@ pub(crate) struct SyntaxNodeChildren {
     next: Option<SyntaxNode>,
 }
 
+impl SyntaxNodeChildren {
+    fn new(parent: SyntaxNode) -> Self {
+        Self {
+            next: parent.first_child(),
+        }
+    }
+}
+
 impl Iterator for SyntaxNodeChildren {
     type Item = SyntaxNode;
     fn next(&mut self) -> Option<Self::Item> {
-        self.next.take().inspect(|_next| todo!())
+        self.next
+            .take()
+            .inspect(|next| self.next = next.next_sibling())
     }
 }
 
@@ -134,15 +508,19 @@ pub(crate) struct SyntaxElementChildren {
 }
 
 impl SyntaxElementChildren {
-    fn new(parent: SyntaxNode) -> Self {
-        todo!()
+    pub fn new(parent: SyntaxNode) -> Self {
+        Self {
+            next: parent.first_child_or_token(),
+        }
     }
 }
 
 impl Iterator for SyntaxElementChildren {
     type Item = SyntaxElement;
     fn next(&mut self) -> Option<Self::Item> {
-        self.next.take().inspect(|next| todo!())
+        self.next.take().inspect(|next| {
+            self.next = next.next_sibling_or_token();
+        })
     }
 }
 
@@ -170,7 +548,10 @@ impl Preorder {
 
     #[cold]
     fn do_skip(&mut self) {
-        todo!()
+        self.next = self.next.take().map(|next| match next {
+            WalkEvent::Enter(first_child) => WalkEvent::Leave(first_child.parent().unwrap()),
+            WalkEvent::Leave(parent) => WalkEvent::Leave(parent),
+        })
     }
 }
 
@@ -183,7 +564,24 @@ impl Iterator for Preorder {
             self.skip_subtree = false;
         }
         let next = self.next.take();
-        todo!()
+        self.next = next.as_ref().and_then(|next| {
+            Some(match next {
+                WalkEvent::Enter(node) => match node.first_child() {
+                    Some(child) => WalkEvent::Enter(child),
+                    None => WalkEvent::Leave(node.clone()),
+                },
+                WalkEvent::Leave(node) => {
+                    if node == &self.start {
+                        return None;
+                    }
+                    match node.next_sibling() {
+                        Some(sibling) => WalkEvent::Enter(sibling),
+                        None => WalkEvent::Leave(node.parent()?),
+                    }
+                }
+            })
+        });
+        next
     }
 }
 
@@ -213,7 +611,10 @@ impl PreorderWithTokens {
 
     #[cold]
     fn do_skip(&mut self) {
-        todo!()
+        self.next = self.next.take().map(|next| match next {
+            WalkEvent::Enter(first_child) => WalkEvent::Leave(first_child.parent().unwrap().into()),
+            WalkEvent::Leave(parent) => WalkEvent::Leave(parent),
+        })
     }
 }
 
@@ -226,7 +627,35 @@ impl Iterator for PreorderWithTokens {
             self.skip_subtree = false;
         }
         let next = self.next.take();
-        todo!()
+        self.next = next.as_ref().and_then(|next| {
+            Some(match next {
+                WalkEvent::Enter(el) => match el {
+                    NodeOrToken::Node(node) => {
+                        let next = match self.direction {
+                            Direction::Next => node.first_child_or_token(),
+                            Direction::Prev => node.last_child_or_token(),
+                        };
+                        match next {
+                            Some(child) => WalkEvent::Enter(child),
+                            None => WalkEvent::Leave(node.clone().into()),
+                        }
+                    }
+                    NodeOrToken::Token(token) => WalkEvent::Leave(token.clone().into()),
+                },
+                WalkEvent::Leave(el) if el == &self.start => return None,
+                WalkEvent::Leave(el) => {
+                    let next = match self.direction {
+                        Direction::Next => el.next_sibling_or_token(),
+                        Direction::Prev => el.prev_sibling_or_token(),
+                    };
+                    match next {
+                        Some(sibling) => WalkEvent::Enter(sibling),
+                        None => WalkEvent::Leave(el.parent()?.into()),
+                    }
+                }
+            })
+        });
+        next
     }
 }
 
@@ -239,7 +668,11 @@ pub(crate) struct PreorderTokens {
 
 impl PreorderTokens {
     fn new(start: SyntaxNode, direction: Direction) -> Self {
-        todo!()
+        let next = match direction {
+            Direction::Next => start.first_token(),
+            Direction::Prev => start.last_token(),
+        };
+        Self { next, direction }
     }
 }
 
@@ -248,7 +681,11 @@ impl Iterator for PreorderTokens {
 
     fn next(&mut self) -> Option<Self::Item> {
         let next = self.next.take();
-        todo!()
+        self.next = next.as_ref().and_then(|next| match self.direction {
+            Direction::Next => next.next_token(),
+            Direction::Prev => next.prev_token(),
+        });
+        next
     }
 }
 
@@ -423,7 +860,38 @@ impl Iterator for SlotsPreorder {
 
     fn next(&mut self) -> Option<WalkEvent<SyntaxSlot>> {
         let next = self.next.take();
-        todo!()
+        self.next = next.as_ref().and_then(|next| {
+            Some(match next {
+                WalkEvent::Enter(slot) => match slot {
+                    SyntaxSlot::Empty { .. } | SyntaxSlot::Token(_) => {
+                        WalkEvent::Leave(slot.clone())
+                    }
+                    SyntaxSlot::Node(node) => match node.slots().next() {
+                        None => WalkEvent::Leave(SyntaxSlot::Node(node.clone())),
+                        Some(first_slot) => WalkEvent::Enter(first_slot),
+                    },
+                },
+                WalkEvent::Leave(slot) => {
+                    let (parent, slot_index) = match slot {
+                        SyntaxSlot::Empty { parent, index } => (parent.clone(), *index as usize),
+                        SyntaxSlot::Token(token) => (token.parent()?, token.index()),
+                        SyntaxSlot::Node(node) => {
+                            if node == &self.start {
+                                return None;
+                            }
+                            (node.parent()?, node.index())
+                        }
+                    };
+                    let next_slot = parent.slots().nth(slot_index + 1);
+                    match next_slot {
+                        Some(slot) => WalkEvent::Enter(slot),
+                        None => WalkEvent::Leave(SyntaxSlot::Node(parent)),
+                    }
+                }
+            })
+        });
+
+        next
     }
 }
 
