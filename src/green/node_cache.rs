@@ -1,25 +1,35 @@
-use std::{hash::{BuildHasherDefault, Hash}, marker::PhantomData, ops::Not, ptr::NonNull};
+use std::{
+    hash::{BuildHasherDefault, Hash},
+    marker::PhantomData,
+    ops::Not,
+    ptr::NonNull,
+};
 
 use hashbrown::hash_map::RawEntryMut;
 use rustc_hash::FxHasher;
 use text_size::TextSize;
 
-use crate::{green::{RawSyntaxKind, element::{GreenElement, GreenElementRef}, node::{GreenNode, GreenNodeData}, token::{GreenToken, GreenTokenData}, trivia::{GreenTrivia, GreenTriviaData}}, syntax::trivia::{TriviaPiece, TriviaPieceKind}, utility_types::NodeOrToken};
-
-
-
+use crate::{
+    green::{
+        RawSyntaxKind,
+        element::{GreenElement, GreenElementRef},
+        node::{GreenNode, GreenNodeData},
+        token::{GreenToken, GreenTokenData},
+        trivia::{GreenTrivia, GreenTriviaData},
+    },
+    syntax::trivia::{TriviaPiece, TriviaPieceKind},
+    utility_types::NodeOrToken,
+};
 
 type HashMap<K, V> = hashbrown::HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
-
-/// Trait implemented for types that can be turned into a raw pointer, and 
+/// Trait implemented for types that can be turned into a raw pointer, and
 /// reconstructed back from it. Used by (GenerationalPointer) internally.
 trait IntoRawPointer {
     type Pointee;
     fn into_raw(self) -> *mut Self::Pointee;
     unsafe fn from_raw(ptr: *mut Self::Pointee) -> Self;
 }
-
 
 impl IntoRawPointer for GreenToken {
     type Pointee = GreenTokenData;
@@ -29,10 +39,9 @@ impl IntoRawPointer for GreenToken {
     }
 
     unsafe fn from_raw(ptr: *mut Self::Pointee) -> Self {
-        unsafe {Self::from_raw(NonNull::new(ptr).unwrap())}
+        unsafe { Self::from_raw(NonNull::new(ptr).unwrap()) }
     }
 }
-
 
 impl IntoRawPointer for GreenTrivia {
     type Pointee = GreenTriviaData;
@@ -42,7 +51,7 @@ impl IntoRawPointer for GreenTrivia {
     }
 
     unsafe fn from_raw(ptr: *mut Self::Pointee) -> Self {
-        unsafe {Self::from_raw(ptr)}
+        unsafe { Self::from_raw(ptr) }
     }
 }
 
@@ -54,10 +63,9 @@ impl IntoRawPointer for GreenNode {
     }
 
     unsafe fn from_raw(ptr: *mut Self::Pointee) -> Self {
-        unsafe {Self::from_raw(NonNull::new(ptr).unwrap())}
+        unsafe { Self::from_raw(NonNull::new(ptr).unwrap()) }
     }
 }
-
 
 /// Represents a "generation" in the garbage collection scheme of the node
 /// cache. For our purpose we only need to track two generations at most (the
@@ -67,7 +75,7 @@ impl IntoRawPointer for GreenNode {
 enum Generation {
     #[default]
     A = 0,
-    B = 1
+    B = 1,
 }
 
 impl Not for Generation {
@@ -76,7 +84,7 @@ impl Not for Generation {
     fn not(self) -> Self::Output {
         match self {
             Self::A => Self::B,
-            Self::B => Self::A
+            Self::B => Self::A,
         }
     }
 }
@@ -96,7 +104,7 @@ fn token_hash(token: &GreenTokenData) -> u64 {
 fn element_id(element: GreenElementRef<'_>) -> *const () {
     match element {
         NodeOrToken::Node(it) => it as *const GreenNodeData as *const (),
-        NodeOrToken::Token(it) => it as *const GreenTokenData as *const ()
+        NodeOrToken::Token(it) => it as *const GreenTokenData as *const (),
     }
 }
 
@@ -107,36 +115,33 @@ fn element_id(element: GreenElementRef<'_>) -> *const () {
 /// zero), while the generation index only needs a single bit of storage
 struct GenerationalPointer<T: IntoRawPointer> {
     data: usize,
-    _ty: PhantomData<T>
+    _ty: PhantomData<T>,
 }
-
 
 impl<T: IntoRawPointer> GenerationalPointer<T> {
     fn new(value: T, generation: Generation) -> Self {
         let ptr = value.into_raw();
         let mut data = ptr as usize;
-        debug_assert!(data&1 == 0);
+        debug_assert!(data & 1 == 0);
         data |= generation as usize;
         Self {
             data,
-            _ty: PhantomData
+            _ty: PhantomData,
         }
     }
 
     fn value(&self) -> &T::Pointee {
         // SAFETY: This clears the least significant bit from 'data'. This bit
-        // should have been set to zero in the original pointer due to the 
+        // should have been set to zero in the original pointer due to the
         // alignment requirements of the underlying data (this is checked by an
         // assertion on debug builds), so this essentially extracts the pointer
         // value from the bit field. Said point is safe to dereference at this point
         // since we're holding a valid reference to `self` which guarantees
-        // `Drop` has not been called and the memory associated with the 
+        // `Drop` has not been called and the memory associated with the
         // pointer has not been released yet.
         let data = self.data & !1;
         let ptr = data as *const T::Pointee;
-        unsafe {
-            &*ptr
-        }
+        unsafe { &*ptr }
     }
 
     fn generation(&self) -> Generation {
@@ -167,11 +172,10 @@ where
     }
 }
 
-
 impl<T: IntoRawPointer> Drop for GenerationalPointer<T> {
     fn drop(&mut self) {
         let ptr = self.value() as *const _ as *mut _;
-        let value = unsafe {T::from_raw(ptr)};
+        let value = unsafe { T::from_raw(ptr) };
         drop(value);
     }
 }
@@ -186,7 +190,7 @@ struct CachedToken(GenerationalPointer<GreenToken>);
 /// because re-computing the hash requires traversing the whole sub-tree.
 /// The hash also differs from the `GreenNode` hash implementation as it
 /// only hashes occupied slots and exclude empty slots
-/// 
+///
 /// Does intentionally not implement `Hash` to have compile time guarantees that the `NodeCache`
 /// uses the correct hash.
 #[derive(Debug)]
@@ -194,9 +198,8 @@ struct CacheNode {
     node: GenerationalPointer<GreenNode>,
     // store the hash as it's expensive to re-compute
     // involves re-computing the hash of the whole sub-tree
-    hash: u64
+    hash: u64,
 }
-
 
 /// A cached [GreenTrivia].
 /// Deliberately doesn't implement `Hash` to make sure all usages
@@ -204,24 +207,22 @@ struct CacheNode {
 #[derive(Debug)]
 struct CachedTrivia(GenerationalPointer<GreenTrivia>);
 
-
 #[derive(Debug)]
 struct TriviaCache {
     /// Generic cache for trivia
     cache: HashMap<CachedTrivia, ()>,
     /// Cached single whitespace trivia
-    whitespace: GreenTrivia
+    whitespace: GreenTrivia,
 }
 
 impl Default for TriviaCache {
     fn default() -> Self {
         Self {
             cache: Default::default(),
-            whitespace: GreenTrivia::new([TriviaPiece::whitespace(1)])
+            whitespace: GreenTrivia::new([TriviaPiece::whitespace(1)]),
         }
     }
 }
-
 
 impl TriviaCache {
     fn trivia_hash_of(pieces: &[TriviaPiece]) -> u64 {
@@ -240,14 +241,20 @@ impl TriviaCache {
         match pieces {
             [] => GreenTrivia::empty(),
             [
-                TriviaPiece { kind: TriviaPieceKind::Whitespace, length }
+                TriviaPiece {
+                    kind: TriviaPieceKind::Whitespace,
+                    length,
+                },
             ] if *length == TextSize::from(1) => self.whitespace.clone(),
             _ => {
                 let hash = Self::trivia_hash_of(pieces);
 
-                let entry = self.cache.raw_entry_mut().from_hash(hash, |trivia| trivia.0.value().pieces() == pieces);
+                let entry = self
+                    .cache
+                    .raw_entry_mut()
+                    .from_hash(hash, |trivia| trivia.0.value().pieces() == pieces);
 
-                 match entry {
+                match entry {
                     RawEntryMut::Occupied(mut entry) => {
                         entry.key_mut().0.set_generation(generation);
                         entry.key().0.value().to_owned()
@@ -268,33 +275,29 @@ impl TriviaCache {
     }
 }
 
-
-
 /// Interner for GreenTokens and GreenNodes
 /// The impl is a bit tricky. As usual when writing interners, we want to
 /// store all values in one HashSet.
-/// 
-/// However, hashing trees is fun: hash of the tree is recursively defined. We 
+///
+/// However, hashing trees is fun: hash of the tree is recursively defined. We
 /// maintain an invariant -- if the tree is interned, then all of its children
 /// are interned as well.
-/// 
+///
 /// That means that computing the hash naively is wasteful -- we just *know*
 /// hashes of children, and we can re-use those.
-/// 
+///
 /// So here we use *raw* API of hashbrown and provide the hashes manually,
-/// instead of going via a `Hash` impl. Our manual `Hash` and the 
+/// instead of going via a `Hash` impl. Our manual `Hash` and the
 /// `#[derive(Hash)]` are actually different! At some point we had a fun bug,
 /// where we accidentally mixed the two hashes, which made the cache much less
 /// efficient.
-/// 
+///
 /// To fix that, we additionally wrap the data in `Cached*` wrappers, to make sure
 /// we don't accidently use the wrong hash~
 #[derive(Default, Debug)]
 pub struct NodeCache {
     nodes: HashMap<CacheNode, ()>,
-    tokens:  HashMap<CacheNode, ()>,
+    tokens: HashMap<CacheNode, ()>,
     trivia: TriviaCache,
-    generation: Generation
+    generation: Generation,
 }
-
-

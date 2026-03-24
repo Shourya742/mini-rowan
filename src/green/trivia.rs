@@ -25,7 +25,6 @@ pub(crate) struct GreenTriviaData {
     data: ReprThin,
 }
 
-
 impl PartialEq for GreenTriviaData {
     fn eq(&self, other: &Self) -> bool {
         self.pieces() == other.pieces()
