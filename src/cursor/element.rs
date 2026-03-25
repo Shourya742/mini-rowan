@@ -1,8 +1,13 @@
+use std::iter;
+
 use text_size::{TextRange, TextSize};
 
 use crate::{
     cursor::{node::SyntaxNode, token::SyntaxToken},
-    green::{RawSyntaxKind, element::GreenElementRef},
+    green::{
+        RawSyntaxKind,
+        element::{GreenElement, GreenElementRef},
+    },
     utility_types::NodeOrToken,
 };
 
@@ -64,6 +69,43 @@ impl SyntaxElement {
         match self {
             Self::Node(it) => it.parent(),
             Self::Token(it) => it.parent(),
+        }
+    }
+
+    #[inline]
+    pub fn ancestor(&self) -> impl Iterator<Item = SyntaxNode> + use<> {
+        let first = match self {
+            Self::Node(it) => Some(it.clone()),
+            Self::Token(it) => it.parent(),
+        };
+        iter::successors(first, SyntaxNode::parent)
+    }
+
+    pub fn first_token(&self) -> Option<SyntaxToken> {
+        match self {
+            Self::Node(it) => it.first_token(),
+            Self::Token(it) => Some(it.clone()),
+        }
+    }
+
+    pub fn last_token(&self) -> Option<SyntaxToken> {
+        match self {
+            Self::Node(it) => it.last_token(),
+            Self::Token(it) => Some(it.clone()),
+        }
+    }
+
+    pub fn next_sibling_or_token(&self) -> Option<Self> {
+        match self {
+            Self::Node(it) => it.next_sibling_or_token(),
+            Self::Token(it) => it.next_sibling_or_token(),
+        }
+    }
+
+    pub fn prev_sibling_or_token(&self) -> Option<Self> {
+        match self {
+            Self::Node(it) => it.prev_sibling_or_token(),
+            Self::Token(it) => it.prev_sibling_or_token(),
         }
     }
 

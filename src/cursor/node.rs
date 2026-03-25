@@ -267,7 +267,7 @@ impl SyntaxNode {
     }
 
     pub fn last_token(&self) -> Option<SyntaxToken> {
-        PreorderTokens::new(self.clone(), Direction::Prev)
+        PreorderWithTokens::new(self.clone(), Direction::Prev)
             .filter_map(|event| match event {
                 WalkEvent::Enter(it) => Some(it),
                 WalkEvent::Leave(_) => None,
@@ -311,7 +311,7 @@ impl SyntaxNode {
         self.preorder_with_tokens(direction)
             .filter_map(|event| match event {
                 WalkEvent::Enter(it) => Some(it),
-                WalkEvent::Leave(it) => None,
+                WalkEvent::Leave(_) => None,
             })
     }
 
@@ -358,7 +358,7 @@ impl SyntaxNode {
                         }
                     };
 
-                return match (token_at_offset(left), token_at_offset(token)) {
+                return match (token_at_offset(left), token_at_offset(right)) {
                     (TokenAtOffset::Single(left), TokenAtOffset::Single(right)) => {
                         TokenAtOffset::Between(left, right)
                     }

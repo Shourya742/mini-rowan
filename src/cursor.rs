@@ -37,11 +37,15 @@
 //! and they can safely use a "weak reference" (raw pointer) to the corresponding green node as an
 //! optimization to avoid having to track atomic references on the traversal hot path.
 
-use std::{ptr, rc::Rc};
+use std::{iter, ops, ptr, rc::Rc};
 
 use text_size::{TextRange, TextSize};
 
 use crate::{
+    cursor::{
+        element::SyntaxElement,
+        node::{Siblings, SyntaxNode},
+    },
     green::{
         RawSyntaxKind,
         element::{GreenElement, GreenElementRef},
@@ -158,6 +162,20 @@ impl NodeData {
     }
 
     #[inline]
+    fn parent_node(&self) -> Option<SyntaxNode> {
+        debug_assert!(matches!(
+            self.parent()?.green(),
+            GreenElementRef::Node { .. }
+        ));
+        match &self.kind {
+            NodeKind::Child { green: _, parent } => Some(SyntaxNode {
+                ptr: parent.clone(),
+            }),
+            NodeKind::Root { .. } => None,
+        }
+    }
+
+    #[inline]
     fn parent(&self) -> Option<&Self> {
         match &self.kind {
             NodeKind::Child { green: _, parent } => Some(&**parent),
@@ -170,6 +188,18 @@ impl NodeData {
         match &self.kind {
             NodeKind::Root { green } => green.as_deref(),
             NodeKind::Child { green, .. } => green.as_deref(),
+        }
+    }
+
+    /// Returns an iterator over the siblings of this node. The iterator is positioned at the current node.
+    #[inline]
+    fn green_siblings(&self) -> Option<Siblings<'_>> {
+        match &self.parent()?.green() {
+            GreenElementRef::Node(ptr) => Some(Siblings::new(ptr, self.slot())),
+            GreenElementRef::Token(_) => {
+                debug_assert!(false, "A token should never be a parent of a token or node");
+                None
+            }
         }
     }
 
@@ -193,5 +223,152 @@ impl NodeData {
     #[inline]
     fn kind(&self) -> RawSyntaxKind {
         self.green().kind()
+    }
+
+    fn next_sibling(&self) -> Option<SyntaxNode> {
+        let siblings = self.green_siblings()?;
+        siblings.following().find_map(|child| {
+            child.element().into_node().and_then(|green| {
+                let parent = self.parent_node()?;
+                let offset = parent.offset() + child.rel_offset();
+                Some(SyntaxNode::new_child(green, parent, child.slot(), offset))
+            })
+        })
+    }
+
+    fn prev_sibling(&self) -> Option<SyntaxNode> {
+        let siblings = self.green_siblings()?;
+        siblings.previous().find_map(|child| {
+            child.element().into_node().and_then(|green| {
+                let parent = self.parent_node()?;
+                let offset = parent.offset() + child.rel_offset();
+                Some(SyntaxNode::new_child(green, parent, child.slot(), offset))
+            })
+        })
+    }
+
+    fn next_sibling_or_token(&self) -> Option<SyntaxElement> {
+        let siblings = self.green_siblings()?;
+
+        siblings.following().next().and_then(|child| {
+            let parent = self.parent_node()?;
+            let offset = parent.offset() + child.rel_offset();
+            Some(SyntaxElement::new(
+                child.element(),
+                parent,
+                child.slot(),
+                offset,
+            ))
+        })
+    }
+
+    fn prev_sibling_or_token(&self) -> Option<SyntaxElement> {
+        let siblings = self.green_siblings()?;
+
+        siblings.previous().next().and_then(|child| {
+            let parent = self.parent_node()?;
+            let offset = parent.offset() + child.rel_offset();
+            Some(SyntaxElement::new(
+                child.element(),
+                parent,
+                child.slot(),
+                offset,
+            ))
+        })
+    }
+
+    fn into_green(self: Rc<Self>) -> GreenElement {
+        match Rc::try_unwrap(self) {
+            Ok(data) => match data.kind {
+                NodeKind::Root { green } => green,
+                NodeKind::Child { green, .. } => green.to_owned(),
+            },
+            Err(ptr) => ptr.green().to_owned(),
+        }
+    }
+
+    /// Return a clone of this subtree detached from its parent
+    #[must_use = "syntax elements are immutable, the result of update methods must be propagated to have any effect"]
+    fn detach(self: Rc<Self>) -> Rc<Self> {
+        match &self.kind {
+            NodeKind::Child { green, .. } => Self::new(
+                NodeKind::Root {
+                    green: green.to_owned(),
+                },
+                0,
+                0.into(),
+            ),
+            // If this node is already detached, increment the reference count and return a clone
+            NodeKind::Root { .. } => self.clone(),
+        }
+    }
+
+    /// Return a clone of this node with the specified range of slots replaced
+    /// with the elements of the provided iterator
+    #[must_use = "syntax elements are immutable, the result of update methods must be propagated to have any effect"]
+    fn splice_slots<R, I>(mut self: Rc<Self>, range: R, replace_with: I) -> Rc<Self>
+    where
+        R: ops::RangeBounds<usize>,
+        I: Iterator<Item = Option<GreenElement>>,
+    {
+        let green = match self.green() {
+            NodeOrToken::Node(green) => green.splice_slots(range, replace_with).into(),
+            NodeOrToken::Token(_) => panic!("called splice slot on a token node"),
+        };
+
+        // Try to reuse the underlying memory allocation if self is the only
+        // outstanding reference to this NodeData
+        match Rc::get_mut(&mut self) {
+            Some(node) => {
+                node.kind = NodeKind::Root { green };
+                node.slot = 0;
+                node.offset = TextSize::from(0);
+                self
+            }
+            None => Self::new(NodeKind::Root { green }, 0, 0.into()),
+        }
+    }
+
+    /// Return a new version of this node with the element `prev_elem` replaced with `next_elem`
+    ///
+    /// `prev_elem` can be a direct child of this node, or an indirect child through any descendant node
+    ///
+    /// Returns `None` if `prev_elem` is not a descendant of this node
+    fn replace_child(
+        mut self: Rc<Self>,
+        prev_elem: SyntaxElement,
+        next_elem: SyntaxElement,
+    ) -> Option<Rc<Self>> {
+        let mut green = next_elem.into_green();
+        let mut elem = prev_elem;
+        loop {
+            let node = elem.parent()?;
+            let is_self = node.key() == self.key();
+
+            let index = elem.index();
+            let range = index..=index;
+
+            let replace_with = iter::once(Some(green));
+            green = node.green().splice_slots(range, replace_with).into();
+            elem = node.into();
+
+            if is_self {
+                break;
+            }
+        }
+
+        // Try to reuse the underlying memory allocation if self is the only
+        // outstanding reference to this NodeData
+        let result = match Rc::get_mut(&mut self) {
+            Some(node) => {
+                node.kind = NodeKind::Root { green };
+                node.slot = 0;
+                node.offset = TextSize::from(0);
+                self
+            }
+            None => Self::new(NodeKind::Root { green }, 0, 0.into()),
+        };
+
+        Some(result)
     }
 }
