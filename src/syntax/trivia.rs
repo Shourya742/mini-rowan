@@ -1,8 +1,8 @@
-use std::marker::PhantomData;
+use std::{fmt::{self, Formatter}, iter::FusedIterator, marker::PhantomData};
 
-use text_size::TextSize;
+use text_size::{TextRange, TextSize};
 
-use crate::syntax::Language;
+use crate::{cursor, syntax::{Language, token::SyntaxToken}};
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
 pub enum TriviaPieceKind {
@@ -90,6 +90,115 @@ impl TriviaPiece {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct SyntaxTriviaPieceNewline<L: Language>(SyntaxTriviaPiece<L>);
+#[derive(Debug, Clone)]
+pub struct SyntaxTriviaPieceWhitespace<L: Language>(SyntaxTriviaPiece<L>);
+#[derive(Debug, Clone)]
+pub struct SyntaxTriviaPieceComments<L: Language>(SyntaxTriviaPiece<L>);
+#[derive(Debug, Clone)]
+pub struct SyntaxTriviaPieceSkipped<L: Language>(SyntaxTriviaPiece<L>);
+
+impl<L: Language> SyntaxTriviaPieceNewline<L> {
+    pub fn text(&self) -> &str {
+        self.0.text()
+    }
+
+    pub fn text_len(&self) -> TextSize {
+        self.0.text_len()
+    }
+
+    pub fn text_range(&self) -> TextRange {
+        self.0.text_range()
+    }
+
+    /// Returns a reference to its [SyntaxTriviaPiece]
+    pub fn as_piece(&self) -> &SyntaxTriviaPiece<L> {
+        &self.0
+    }
+
+    /// Returns its [SyntaxTriviaPiece]
+    pub fn into_piece(self) -> SyntaxTriviaPiece<L> {
+        self.0
+    }
+}
+
+impl<L: Language> SyntaxTriviaPieceWhitespace<L> {
+    pub fn text(&self) -> &str {
+        self.0.text()
+    }
+
+    pub fn text_len(&self) -> TextSize {
+        self.0.text_len()
+    }
+
+    pub fn text_range(&self) -> TextRange {
+        self.0.text_range()
+    }
+
+    /// Returns a reference to its [SyntaxTriviaPiece]
+    pub fn as_piece(&self) -> &SyntaxTriviaPiece<L> {
+        &self.0
+    }
+
+    /// Returns its [SyntaxTriviaPiece]
+    pub fn into_piece(self) -> SyntaxTriviaPiece<L> {
+        self.0
+    }
+}
+
+impl<L: Language> SyntaxTriviaPieceComments<L> {
+    pub fn text(&self) -> &str {
+        self.0.text()
+    }
+
+    pub fn text_len(&self) -> TextSize {
+        self.0.text_len()
+    }
+
+    pub fn text_range(&self) -> TextRange {
+        self.0.text_range()
+    }
+
+    pub fn has_newline(&self) -> bool {
+        self.0.trivia.kind.is_multiline_comment()
+    }
+
+    /// Returns a reference to its [SyntaxTriviaPiece]
+    pub fn as_piece(&self) -> &SyntaxTriviaPiece<L> {
+        &self.0
+    }
+
+    /// Returns its [SyntaxTriviaPiece]
+    pub fn into_piece(self) -> SyntaxTriviaPiece<L> {
+        self.0
+    }
+}
+
+impl<L: Language> SyntaxTriviaPieceSkipped<L> {
+    pub fn text(&self) -> &str {
+        self.0.text()
+    }
+
+    pub fn text_len(&self) -> TextSize {
+        self.0.text_len()
+    }
+
+    pub fn text_range(&self) -> TextRange {
+        self.0.text_range()
+    }
+
+    /// Returns a reference to its [SyntaxTriviaPiece]
+    pub fn as_piece(&self) -> &SyntaxTriviaPiece<L> {
+        &self.0
+    }
+
+    /// Returns its [SyntaxTriviaPiece]
+    pub fn into_piece(self) -> SyntaxTriviaPiece<L> {
+        self.0
+    }
+}
+
 /// [SyntaxTriviaPiece] gives access  to the most granular information about the trivia
 /// that was specified by the lexer at the token creation time.
 ///
@@ -102,9 +211,379 @@ impl TriviaPiece {
 /// piece is defined by the [TriviaPiece]; its content is irrelevant.
 #[derive(Clone)]
 pub struct SyntaxTriviaPiece<L: Language> {
-    // raw: cursor::SyntaxTrivia,
+    raw: cursor::trivia::SyntaxTrivia,
     // Absolute offset from the beginning of the file.
     offset: TextSize,
     trivia: TriviaPiece,
     _p: PhantomData<L>,
+}
+
+
+impl<L: Language> SyntaxTriviaPiece<L> {
+    pub(crate) fn into_raw_piece(self) -> TriviaPiece {
+        self.trivia
+    }
+
+    /// Returns the internal kind of this trivia piece
+    pub fn kind(&self) -> TriviaPieceKind {
+        self.trivia.kind()
+    }
+
+    /// Returns the associated text just for this trivia piece. This is different from [SyntaxTrivia::text()],
+    /// which returns the text of the whole trivia.
+    pub fn text(&self) -> &str {
+        let token = self.raw.token();
+        let text = token.text();
+
+        // Compute the offset relative to the token
+        let start = self.offset - token.text_range().start();
+        let end = start + self.text_len();
+
+        // Don't use self.raw.text(). It iterates over all pieces.
+        &text[start.into()..end.into()]
+    }
+
+    /// Returns the associated text length just for this trivia piece. This is different from `SyntaxTrivia::len()`,
+    /// which returns the text length of the whole trivia.
+    pub fn text_len(&self) -> TextSize {
+        self.trivia.text_len()
+    }
+
+    /// Returns the associated text range just for this trivia piece. This is different from [SyntaxTrivia::text_range()],
+    /// which returns the text range of the whole trivia
+    pub fn text_range(&self) -> TextRange {
+        TextRange::at(self.offset, self.text_len())
+    }
+
+    /// Returns true if this trivia piece is a [SyntaxTriviaPieceNewLine]
+    pub fn is_newline(&self) -> bool {
+        self.trivia.kind.is_newline()
+    }
+
+    /// Returns true if this trivia is a [SyntaxTriviaPieceWhitespace]
+    pub fn is_whitespace(&self) -> bool {
+        self.trivia.kind.is_whitespace()
+    }
+
+    /// Returns true if this trivia piece is a [SyntaxTriviaPieceComments].
+    pub const fn is_comments(&self) -> bool {
+        matches!(
+            self.trivia.kind,
+            TriviaPieceKind::SingleLineComment | TriviaPieceKind::MultiLineComment
+        )
+    }
+
+    /// Returns true if this trivia piece is a [SyntaxTriviaPieceSkipped].
+    pub fn is_skipped(&self) -> bool {
+        self.trivia.kind.is_skipped()
+    }
+
+    /// Cast this trivia piece to [SyntaxTriviaPieceNewline].
+    pub fn as_newline(&self) -> Option<SyntaxTriviaPieceNewline<L>> {
+        match &self.trivia.kind {
+            TriviaPieceKind::Newline => Some(SyntaxTriviaPieceNewline(self.clone())),
+            _ => None,
+        }
+    }
+
+    /// Cast this trivia piece to [SyntaxTriviaPieceWhitespace].
+    pub fn as_whitespace(&self) -> Option<SyntaxTriviaPieceWhitespace<L>> {
+        match &self.trivia.kind {
+            TriviaPieceKind::Whitespace => Some(SyntaxTriviaPieceWhitespace(self.clone())),
+            _ => None,
+        }
+    }
+
+    /// Cast this trivia piece to [SyntaxTriviaPieceComments].
+    pub fn as_comments(&self) -> Option<SyntaxTriviaPieceComments<L>> {
+        match &self.trivia.kind {
+            TriviaPieceKind::SingleLineComment | TriviaPieceKind::MultiLineComment => {
+                Some(SyntaxTriviaPieceComments(self.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Casts this piece to a skipped trivia piece.
+    pub fn as_skipped(&self) -> Option<SyntaxTriviaPieceSkipped<L>> {
+        match &self.trivia.kind {
+            TriviaPieceKind::Skipped => Some(SyntaxTriviaPieceSkipped(self.clone())),
+            _ => None,
+        }
+    }
+
+    pub fn token(&self) -> SyntaxToken<L> {
+        SyntaxToken::from(self.raw.token().clone())
+    }
+}
+
+
+impl<L: Language> fmt::Debug for SyntaxTriviaPiece<L> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.trivia.kind {
+            TriviaPieceKind::Newline => write!(f, "Newline(")?,
+            TriviaPieceKind::Whitespace => write!(f, "Whitespace(")?,
+            TriviaPieceKind::SingleLineComment | TriviaPieceKind::MultiLineComment => {
+                write!(f, "Comments(")?
+            }
+            TriviaPieceKind::Skipped => write!(f, "Skipped(")?,
+        }
+        print_debug_str(self.text(), f)?;
+        write!(f, ")")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct SyntaxTrivia<L: Language> {
+    raw: cursor::trivia::SyntaxTrivia,
+    _p: PhantomData<L>
+}
+
+
+#[derive(Clone)]
+pub struct SyntaxTriviaPiecesIterator<L: Language> {
+    iter: cursor::trivia::SyntaxTriviaPiecesIterator,
+    _p: PhantomData<L>
+}
+
+impl<L: Language> Iterator for SyntaxTriviaPiecesIterator<L> {
+    type Item = SyntaxTriviaPiece<L>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (offset, trivia) = self.iter.next()?;
+        Some(SyntaxTriviaPiece { raw: self.iter.raw.clone(), offset, trivia, _p: PhantomData })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+impl<L: Language> DoubleEndedIterator for SyntaxTriviaPiecesIterator<L> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let (offset, trivia) = self.iter.next_back()?;
+        Some(SyntaxTriviaPiece {
+            raw: self.iter.raw.clone(),
+            offset,
+            trivia,
+            _p: PhantomData,
+        })
+    }
+}
+
+impl<L: Language> ExactSizeIterator for SyntaxTriviaPiecesIterator<L> {}
+
+
+
+impl<L: Language> SyntaxTrivia<L> {
+    pub(super) fn new(raw: cursor::trivia::SyntaxTrivia) -> Self {
+        Self {
+            raw,
+            _p: PhantomData
+        }
+    }
+
+    /// Returns all [SyntaxTriviaPiece] of this trivia
+    pub fn pieces(&self) -> SyntaxTriviaPiecesIterator<L> {
+        SyntaxTriviaPiecesIterator { iter: self.raw.pieces(), _p: PhantomData }
+    }
+
+    pub fn last(&self) -> Option<SyntaxTriviaPiece<L>> {
+        let piece = self.raw.last()?;
+
+        Some(SyntaxTriviaPiece { raw: self.raw.clone(), offset: self.raw.text_range().end() - piece.length, trivia: *piece, _p: Default::default() })
+    }
+
+    pub fn first(&self) -> Option<SyntaxTriviaPiece<L>> {
+        let piece = self.raw.first()?;
+
+        Some(SyntaxTriviaPiece {
+            raw: self.raw.clone(),
+            offset: self.raw.text_range().start(),
+            trivia: *piece,
+            _p: Default::default(),
+        })
+    }
+
+    pub fn text(&self) -> &str {
+        self.raw.text()
+    }
+
+    pub fn text_range(&self) -> TextRange {
+        self.raw.text_range()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.raw.len() == 0
+    }
+
+    pub fn has_skipped(&self) -> bool {
+        self.pieces().any(|piece| piece.is_skipped())
+    }
+}
+
+fn print_debug_str<S: AsRef<str>>(text: S, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let text = text.as_ref();
+    if text.len() < 25 {
+        write!(f, "{text:?}")
+    } else {
+        for idx in 21..25 {
+            if text.is_char_boundary(idx) {
+                let text = format!("{} ...", &text[..idx]);
+                return write!(f, "{text:?}");
+            }
+        }
+        write!(f, "")
+    }
+}
+
+impl<L: Language> std::fmt::Debug for SyntaxTrivia<L> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        write!(f, "[")?;
+        let mut first_piece = true;
+
+        for piece in self.pieces() {
+            if !first_piece {
+                write!(f, ", ")?;
+            }
+            first_piece = false;
+            write!(f, "{piece:?}")?;
+        }
+
+        write!(f, "]")
+    }
+}
+
+/// Remove leading newlines and whitespaces from `trivia`.
+pub fn trim_leading_trivia_pieces<L: Language>(trivia: impl ExactSizeIterator<Item = SyntaxTriviaPiece<L>>) -> impl ExactSizeIterator<Item = SyntaxTriviaPiece<L>> {
+    let mut trivia = trivia.peekable();
+
+    // We cannot use `skip_while` because `SkipWhile` doesn't implement `ExactSizeIterator`.
+    // Eager version of `skip_while` which eagerly consumes trivia.
+    while trivia.next_if(|x| x.is_whitespace() || x.is_newline()).is_some() {}
+
+    trivia
+}
+
+
+/// Remove trailing newlines and whitespaces from `trivia`.
+pub fn trim_trailing_trivia_pieces<L: Language>(
+    trivia: impl ExactSizeIterator<Item = SyntaxTriviaPiece<L>> + DoubleEndedIterator,
+) -> impl ExactSizeIterator<Item = SyntaxTriviaPiece<L>> {
+    let mut trivia = trivia.rev().peekable();
+    let mut take_count = trivia.len();
+    // We cannot use `take_while` because `TakeWhile` doesn't implement `ExactSizeIterator`.
+    while trivia
+        .next_if(|x| x.is_whitespace() || x.is_newline())
+        .is_some()
+    {
+        take_count -= 1;
+    }
+    // We have to use `take` to avoid panicking on `ExactSizeIterator under-reported length`.
+    trivia.rev().take(take_count)
+}
+
+
+/// It creates an iterator by chaining two trivia pieces. This iterator
+/// of trivia can be attached to a token using `*_pieces` APIs.
+pub fn chain_trivia_pieces<L, F, S>(first: F, second: S) -> ChainTriviaPiecesIterator<F, S>
+where
+    L: Language,
+    F: Iterator<Item = SyntaxTriviaPiece<L>>,
+    S: Iterator<Item = SyntaxTriviaPiece<L>>
+{
+    ChainTriviaPiecesIterator::new(first, second)
+}
+
+/// Chain iterator that chains two iterators over syntax trivia together.
+/// 
+/// This is the same as Rust's [std::iter::Chain] iterator but implements [ExactSizeIterator].
+/// Rust doesn't implement [ExactSizeIterator] because adding the sizes of both pieces may overflow.
+/// 
+/// Implementing [ExactSizeIterator] in our case is safe because this may only overflows if
+/// a source document has more than 2^32 trivia which isn't possible because our source documents are limited to 2^32
+/// length
+pub struct ChainTriviaPiecesIterator<F, S> {
+    first: Option<F>,
+    second: S
+}
+
+impl<F, S> ChainTriviaPiecesIterator<F, S> {
+    fn new(first: F, second: S) -> Self {
+        Self {
+            first: Some(first),
+            second
+        }
+    }
+}
+
+
+impl<L, F, S> Iterator for ChainTriviaPiecesIterator<F, S>
+where
+    L: Language,
+    F: Iterator<Item = SyntaxTriviaPiece<L>>,
+    S: Iterator<Item = SyntaxTriviaPiece<L>>,
+{
+    type Item = SyntaxTriviaPiece<L>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.first {
+            Some(first) => match first.next() {
+                Some(next) => Some(next),
+                None => {
+                    self.first.take();
+                    self.second.next()
+                }
+            },
+            None => self.second.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match &self.first {
+            Some(first) => {
+                let (first_lower, first_upper) = first.size_hint();
+                let (second_lower, second_upper) = self.second.size_hint();
+
+                let lower = first_lower.saturating_add(second_lower);
+
+                let upper = match (first_upper, second_upper) {
+                    (Some(first), Some(second)) => first.checked_add(second),
+                    _ => None,
+                };
+
+                (lower, upper)
+            }
+            None => self.second.size_hint(),
+        }
+    }
+}
+
+impl<L, F, S> FusedIterator for ChainTriviaPiecesIterator<F, S>
+where
+    L: Language,
+    F: Iterator<Item = SyntaxTriviaPiece<L>>,
+    S: Iterator<Item = SyntaxTriviaPiece<L>>,
+{
+}
+
+impl<L, F, S> ExactSizeIterator for ChainTriviaPiecesIterator<F, S>
+where
+    L: Language,
+    F: ExactSizeIterator<Item = SyntaxTriviaPiece<L>>,
+    S: ExactSizeIterator<Item = SyntaxTriviaPiece<L>>,
+{
+    fn len(&self) -> usize {
+        match &self.first {
+            Some(first) => {
+                let first_len = first.len();
+                let second_len = self.second.len();
+
+                // SAFETY: Should be safe because a program can never contain more than u32 pieces
+                // because the text ranges are represented as u32 (and each piece must at least contain a single character).
+                first_len + second_len
+            }
+            None => self.second.len(),
+        }
+    }
 }
