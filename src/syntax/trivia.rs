@@ -1,8 +1,15 @@
-use std::{fmt::{self, Formatter}, iter::FusedIterator, marker::PhantomData};
+use std::{
+    fmt::{self, Formatter},
+    iter::FusedIterator,
+    marker::PhantomData,
+};
 
 use text_size::{TextRange, TextSize};
 
-use crate::{cursor, syntax::{Language, token::SyntaxToken}};
+use crate::{
+    cursor,
+    syntax::{Language, token::SyntaxToken},
+};
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
 pub enum TriviaPieceKind {
@@ -218,7 +225,6 @@ pub struct SyntaxTriviaPiece<L: Language> {
     _p: PhantomData<L>,
 }
 
-
 impl<L: Language> SyntaxTriviaPiece<L> {
     pub(crate) fn into_raw_piece(self) -> TriviaPiece {
         self.trivia
@@ -317,7 +323,6 @@ impl<L: Language> SyntaxTriviaPiece<L> {
     }
 }
 
-
 impl<L: Language> fmt::Debug for SyntaxTriviaPiece<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.trivia.kind {
@@ -336,14 +341,13 @@ impl<L: Language> fmt::Debug for SyntaxTriviaPiece<L> {
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct SyntaxTrivia<L: Language> {
     raw: cursor::trivia::SyntaxTrivia,
-    _p: PhantomData<L>
+    _p: PhantomData<L>,
 }
-
 
 #[derive(Clone)]
 pub struct SyntaxTriviaPiecesIterator<L: Language> {
     iter: cursor::trivia::SyntaxTriviaPiecesIterator,
-    _p: PhantomData<L>
+    _p: PhantomData<L>,
 }
 
 impl<L: Language> Iterator for SyntaxTriviaPiecesIterator<L> {
@@ -351,7 +355,12 @@ impl<L: Language> Iterator for SyntaxTriviaPiecesIterator<L> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let (offset, trivia) = self.iter.next()?;
-        Some(SyntaxTriviaPiece { raw: self.iter.raw.clone(), offset, trivia, _p: PhantomData })
+        Some(SyntaxTriviaPiece {
+            raw: self.iter.raw.clone(),
+            offset,
+            trivia,
+            _p: PhantomData,
+        })
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -373,25 +382,31 @@ impl<L: Language> DoubleEndedIterator for SyntaxTriviaPiecesIterator<L> {
 
 impl<L: Language> ExactSizeIterator for SyntaxTriviaPiecesIterator<L> {}
 
-
-
 impl<L: Language> SyntaxTrivia<L> {
     pub(super) fn new(raw: cursor::trivia::SyntaxTrivia) -> Self {
         Self {
             raw,
-            _p: PhantomData
+            _p: PhantomData,
         }
     }
 
     /// Returns all [SyntaxTriviaPiece] of this trivia
     pub fn pieces(&self) -> SyntaxTriviaPiecesIterator<L> {
-        SyntaxTriviaPiecesIterator { iter: self.raw.pieces(), _p: PhantomData }
+        SyntaxTriviaPiecesIterator {
+            iter: self.raw.pieces(),
+            _p: PhantomData,
+        }
     }
 
     pub fn last(&self) -> Option<SyntaxTriviaPiece<L>> {
         let piece = self.raw.last()?;
 
-        Some(SyntaxTriviaPiece { raw: self.raw.clone(), offset: self.raw.text_range().end() - piece.length, trivia: *piece, _p: Default::default() })
+        Some(SyntaxTriviaPiece {
+            raw: self.raw.clone(),
+            offset: self.raw.text_range().end() - piece.length,
+            trivia: *piece,
+            _p: Default::default(),
+        })
     }
 
     pub fn first(&self) -> Option<SyntaxTriviaPiece<L>> {
@@ -455,16 +470,20 @@ impl<L: Language> std::fmt::Debug for SyntaxTrivia<L> {
 }
 
 /// Remove leading newlines and whitespaces from `trivia`.
-pub fn trim_leading_trivia_pieces<L: Language>(trivia: impl ExactSizeIterator<Item = SyntaxTriviaPiece<L>>) -> impl ExactSizeIterator<Item = SyntaxTriviaPiece<L>> {
+pub fn trim_leading_trivia_pieces<L: Language>(
+    trivia: impl ExactSizeIterator<Item = SyntaxTriviaPiece<L>>,
+) -> impl ExactSizeIterator<Item = SyntaxTriviaPiece<L>> {
     let mut trivia = trivia.peekable();
 
     // We cannot use `skip_while` because `SkipWhile` doesn't implement `ExactSizeIterator`.
     // Eager version of `skip_while` which eagerly consumes trivia.
-    while trivia.next_if(|x| x.is_whitespace() || x.is_newline()).is_some() {}
+    while trivia
+        .next_if(|x| x.is_whitespace() || x.is_newline())
+        .is_some()
+    {}
 
     trivia
 }
-
 
 /// Remove trailing newlines and whitespaces from `trivia`.
 pub fn trim_trailing_trivia_pieces<L: Language>(
@@ -483,40 +502,38 @@ pub fn trim_trailing_trivia_pieces<L: Language>(
     trivia.rev().take(take_count)
 }
 
-
 /// It creates an iterator by chaining two trivia pieces. This iterator
 /// of trivia can be attached to a token using `*_pieces` APIs.
 pub fn chain_trivia_pieces<L, F, S>(first: F, second: S) -> ChainTriviaPiecesIterator<F, S>
 where
     L: Language,
     F: Iterator<Item = SyntaxTriviaPiece<L>>,
-    S: Iterator<Item = SyntaxTriviaPiece<L>>
+    S: Iterator<Item = SyntaxTriviaPiece<L>>,
 {
     ChainTriviaPiecesIterator::new(first, second)
 }
 
 /// Chain iterator that chains two iterators over syntax trivia together.
-/// 
+///
 /// This is the same as Rust's [std::iter::Chain] iterator but implements [ExactSizeIterator].
 /// Rust doesn't implement [ExactSizeIterator] because adding the sizes of both pieces may overflow.
-/// 
+///
 /// Implementing [ExactSizeIterator] in our case is safe because this may only overflows if
 /// a source document has more than 2^32 trivia which isn't possible because our source documents are limited to 2^32
 /// length
 pub struct ChainTriviaPiecesIterator<F, S> {
     first: Option<F>,
-    second: S
+    second: S,
 }
 
 impl<F, S> ChainTriviaPiecesIterator<F, S> {
     fn new(first: F, second: S) -> Self {
         Self {
             first: Some(first),
-            second
+            second,
         }
     }
 }
-
 
 impl<L, F, S> Iterator for ChainTriviaPiecesIterator<F, S>
 where

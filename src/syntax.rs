@@ -1,6 +1,10 @@
 use core::fmt;
 
-use crate::{ast::AstNode, green::RawSyntaxKind};
+use crate::{
+    ast::AstNode,
+    green::RawSyntaxKind,
+    syntax::node::{SyntaxNode, SyntaxSlot, SyntaxSlots},
+};
 
 pub mod element;
 pub mod node;
