@@ -18,5 +18,6 @@ pub mod red;
 pub mod sll;
 pub mod syntax;
 pub mod syntax_factory;
-pub mod syntax_text;
+pub mod syntax_token_text;
+pub mod token_text;
 pub mod utility_types;

@@ -20,6 +20,7 @@ use crate::{
         element::{GreenElement, GreenElementRef},
         node::{Child, Children, GreenNode, GreenNodeData, Slot},
     },
+    syntax_token_text::SyntaxNodeText,
     utility_types::{Direction, NodeOrToken, TokenAtOffset, WalkEvent},
 };
 

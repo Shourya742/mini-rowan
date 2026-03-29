@@ -17,6 +17,7 @@ use crate::{
         token::SyntaxToken,
         trivia::{SyntaxTrivia, SyntaxTriviaPiece},
     },
+    syntax_token_text::SyntaxNodeText,
     utility_types::{Direction, NodeOrToken, TokenAtOffset, WalkEvent},
 };
 
@@ -650,7 +651,7 @@ impl<L: Language> Iterator for SyntaxElementChildren<L> {
 }
 
 pub struct Preorder<L: Language> {
-    raw: cursor::Preorder,
+    raw: cursor::node::Preorder,
     _p: PhantomData<L>,
 }
 
